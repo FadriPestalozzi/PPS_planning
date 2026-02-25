@@ -24,5 +24,6 @@ def get_sql_data(query,
     connection_string = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}"
     # open up engine
     engine = sql.create_engine(connection_string)
-    return pd.read_sql(query, engine)
+    with open(query, 'r') as f:
+        return pd.read_sql(f.read(), engine)
 
