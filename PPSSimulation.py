@@ -41,15 +41,15 @@ class ProductionOrder:
 class OperationCycle:
     def __init__(self, PA, PosNumber, opcID, WorkPlaceName, Dispatchdepartment, Machine, AdhocChangeState, opc_state, opc_state_text, PlannedAmountPieces, ActualAmountPieces, PlannedAmountBoards, ActualAmountBoards, PlannedOperationTime, ActualOperationTime, TotalInterruptTime, TotalActiveTime, opc_endtimestamp):
         self.PA = PA
-        self.PosNumber =
-        self.opcID =
-        self.WorkPlaceName =
-        self.Dispatchdepartment =
-        self.Machine =
-        self.AdhocChangeState =
-        self.opc_state =
-        self.opc_state_text =
-        self.PlannedAmountPieces =
+        self.PosNumber = PosNumber
+        self.opcID = opcID
+        self.WorkPlaceName = WorkPlaceName
+        self.Dispatchdepartment = Dispatchdepartment
+        self.Machine = Machine
+        self.AdhocChangeState = AdhocChangeState
+        self.opc_state = opc_state
+        self.opc_state_text = opc_state_text
+        self.PlannedAmountPieces = PlannedAmountPieces
         self.ActualAmountPieces =
         self.PlannedAmountBoards =
         self.ActualAmountBoards =
