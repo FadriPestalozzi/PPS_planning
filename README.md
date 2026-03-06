@@ -5,14 +5,14 @@
 - [ ] Forecast and detect bottlenecks before they happen
 
 
-- [ ] obtain input parameters
-  - [ ] Work In Progress (WIP) per WorkPlaceGroup (WPG)
-  - [ ] throughput capacity per specific WPG
-  - [ ] open OperationCycles per WA/PA
+- [x] obtain input parameters
+  - [x] Work In Progress (WIP) per WorkPlaceGroup (WPG)
+  - [x] throughput capacity per specific WPG
+  - [x] open OperationCycles per WA/PA
 
 
-- [ ] list data sources (see sql, too)
-  - [ ] DycoPlanEx DispatchList, OperationCycles, ProductionOrders
-  - [ ] SAP_Rohdaten maybe
+- [x] list data sources (see sql, too)
+  - [x] DycoPlanEx DispatchList, OperationCycles, ProductionOrders
+  - [x] (SAP_Rohdaten) not yet needed 
 
-
+- add time based production 

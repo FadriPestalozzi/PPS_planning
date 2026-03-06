@@ -11,13 +11,12 @@ import matplotlib.pyplot as plt
 #     .name
 #     .input_WIP
 #     .capa_per_day
-#     .df  (pandas DataFrame to display)
+#     .df (pandas DataFrame to display)
 # --------------------------------------------------
 
 st.set_page_config(layout="wide")
 
 st.title("Workplace Dashboard")
-
 
 #def build_webpage(workplaces, production_orders, opcs):
 def build_webpage():
@@ -50,7 +49,7 @@ def build_webpage():
     # --------------------------------------------------
     # Sidebar: DataFrame selector
     # --------------------------------------------------
-    lookup_capa_per_day = pd.read_csv('./capa_per_day.csv', delimiter=';', encoding='UTF-8')
+    lookup_capa_per_day = pd.read_csv('capa_per_wpg.csv', delimiter=';', encoding='UTF-8')
     # load a daily capacity of at least one opc per day
     workplace_names = np.unique(lookup_capa_per_day[["Workplace"]].to_numpy().flatten())
     # workplace_names = [wp.name for wp in workplaces]

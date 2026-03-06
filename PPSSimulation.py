@@ -1,5 +1,10 @@
-from collections import deque, defaultdict
 from datetime import datetime, timedelta
+
+import numpy as np
+
+import dataloading as load
+from time import time as timestamp, sleep
+
 
 import pandas as pd
 
@@ -8,48 +13,110 @@ import pandas as pd
 # Einheit = Aufträge pro Tag
 # 80% von max. Kapazität
 # ----------------------------
-lookup_capa_per_day = pd.read_csv('./capa_per_day.csv', delimiter=';', encoding='UTF-8')
+lookup_capa_per_day = pd.read_csv('./capa_per_wpg.csv', delimiter=';', encoding='UTF-8')
+lookup_parallel_per_day = pd.read_csv('./capa_per_wpg.csv', delimiter=';', encoding='UTF-8')
 # load a daily capacity of at least one opc per day
 lookup_capa_per_day = lookup_capa_per_day.set_index('Workplace')['MaxOPCs'].mul(0.8).to_dict()
+lookup_parallel_per_day = lookup_parallel_per_day.set_index('Workplace')['parallel'].to_dict()
 for key in lookup_capa_per_day.keys():
     if lookup_capa_per_day[key] < 1:
         lookup_capa_per_day[key] = 1
 
-class sim_date:
+class sim_clock():
     def __init__(self, date=datetime.today(), hour=datetime.now().hour):
         self.date = date.replace(hour=hour, minute=0, second=0, microsecond=0)
-
-    def year(self):
-        return self.date.year
-
-    def month(self):
-        return self.date.month
-
-    def day(self):
-        return self.date.day
-
-    def hour(self):
-        return self.date.hour
 
     def next_day(self, delta = 1):
         self.date += timedelta(days=delta)
         return self.date
 
-    def next_hour(self, delta = 1):
+    def tick(self, delta = 1):
         self.date += timedelta(hours=delta)
 
+    def difference(self, other_date):
+        return (self.date - other_date.date).days * 24 + (self.date - other_date.date).seconds // 3600
+
 class Workplace:
-    def __init__(self, name, capa_per_day=None):
+    def __init__(self, name, capa_per_day=None, parallel_processes=None):
         self.name = name
         self.location = None
         if capa_per_day is None:
             self.load_capa_from_file()
         else:
             self.capa_per_day = capa_per_day # use the floor of capa_per_day
+        if parallel_processes is None:
+            self.load_parallel_from_file()
+        else:
+            self.parallel_processes = parallel_processes # use the floor of capa_per_day
         self.input_wip: list[ProductionOrder] = []
         self.output_wip: list[ProductionOrder] = []
 
-    def run(self, date = sim_date()):
+    # def run(self, date = sim_clock()):
+    #     """
+    #     Process work-in-progress items according to workplace capacity.
+    #
+    #     Moves items from input queue to output queue based on the daily capacity limit.
+    #     Input queue is updated to remove processed items.
+    #
+    #     Returns:
+    #         None
+    #     """
+    #     if self.parallel_processes is None:
+    #         raise Exception ('No Capacity defined for Workplace')
+    #     if type(self.parallel_processes) is not int:
+    #         self.parallel_processes = int(self.parallel_processes)
+    #     # Convert up to capa_per_day items from input to output
+    #     if len(self.input_wip) < self.parallel_processes:
+    #         self.output_wip = self.input_wip
+    #     else:
+    #         self.output_wip = list(self.input_wip)[:self.parallel_processes]
+    #     for pa in self.output_wip:
+    #         pa.current_step.mark_complete(date)
+    #     #self.input_wip = list(self.input_wip)[self.parallel_processes:]
+    #
+    # def ship_output_wip(self, date = sim_clock()):
+    #     if len(self.output_wip)<1:
+    #         return
+    #     for pa in self.output_wip:
+    #         if pa.next_step is None:
+    #             pa.FinishedDate = date.date
+    #             break
+    #         pa.next_step.workplace.input_wip.append(pa)
+    #     self.output_wip = []
+    #
+    # def run_and_ship(self, date = sim_clock()):
+    #     self.run(date)
+    #     self.ship_output_wip()
+
+    def load_parallel_from_file(self, default=1, mute=True):
+        try:
+            self.parallel_processes = lookup_parallel_per_day[self.name]
+        except KeyError as e:
+            if not mute:
+                print(f'Could not find {self.name} in lookup_capa_per_day')
+            if default:
+                self.parallel_processes = default
+            else:
+                raise e
+
+    def load_capa_from_file(self, default=1, mute=True):
+        try:
+            self.capa_per_day = lookup_capa_per_day[self.name]
+        except KeyError as e:
+            if not mute:
+                print(f'Could not find {self.name} in lookup_capa_per_day')
+            if default:
+                self.capa_per_day = default
+            else:
+                raise e
+
+class Dispatchdepartment:
+    def __init__(self, name):
+        self.name = name
+        self.workplaces: list[Workplace] = []
+
+
+    def run(self, date = sim_clock()):
         """
         Process work-in-progress items according to workplace capacity.
 
@@ -59,42 +126,56 @@ class Workplace:
         Returns:
             None
         """
-        print(self.name, 'running', len(self.input_wip), 'items')
-        if self.capa_per_day is None:
-            raise Exception ('No Capacity defined for Workplace')
-        if type(self.capa_per_day) is not int:
-            self.capa_per_day = int(self.capa_per_day)
-        # Convert up to capa_per_day items from input to output
-        if len(self.input_wip) < self.capa_per_day:
-            self.output_wip = self.input_wip
-        else:
-            self.output_wip = list(self.input_wip)[:self.capa_per_day]
-        for pa in self.output_wip:
-            pa.current_step.mark_complete(date)
-        self.input_wip = list(self.input_wip)[self.capa_per_day:]
-
-    def ship_output_wip(self):
-        for pa in self.output_wip:
-            print('\t', pa.PA, 'shipped to', pa.next_step.workplace, '!')
-            pa.next_step.workplace.input_wip.append(pa)
-        self.output_wip = []
-
-    def run_and_ship(self, date = sim_date()):
-        self.run(date)
-        self.ship_output_wip()
-
-    def load_capa_from_file(self, default=1):
-        try:
-            self.capa_per_day = lookup_capa_per_day[self.name]
-        except KeyError as e:
-            print(f'Could not find {self.name} in lookup_capa_per_day')
-            if default:
-                self.capa_per_day = default
+        for wp in self.workplaces:
+            if wp.parallel_processes is None:
+                raise Exception ('No parallel processing defined for workplace')
+            if type(wp.parallel_processes) is not int:
+                wp.parallel_processes = int(wp.parallel_processes)
+            # Progress up to parallel_processes items from input to output
+            # process the whole wip if parallel places exist, else only the first couple
+            if len(wp.input_wip) < wp.parallel_processes:
+                for pa in wp.input_wip:
+                    pa.current_step.progress(date)
             else:
-                raise e
+                for pa in wp.input_wip[:wp.parallel_processes]:
+                    pa.current_step.progress(date)
+            # now check all finished opcs and move them to output_wip
+            for pa in wp.input_wip:
+                if pa.current_step.opc_state == 3:
+                    wp.output_wip.append(pa)
+                    pa.current_step = pa.next_step
+                    try:
+                        wp.input_wip.remove(pa)
+                    except ValueError:
+                        print(f'Could not remove {pa.PA} from input_wip', wp.name)
+                        print('in, out', wp.input_wip, wp.output_wip)
+                try:
+                    pa.next_step = pa.next_step.next_step
+                except AttributeError as e:
+                    # there is no next step, PA is finished
+                    pa.next_step = None
+        return
+
+    def ship_output_wip(self, date = sim_clock()):
+        for wp in self.workplaces:
+            if len(wp.output_wip)<1:
+                break
+            for pa in wp.output_wip:
+                if pa.next_step is None:
+                    pa.FinishedDate = date.date
+                    break
+                pa.next_step.workplace.input_wip.append(pa)
+            wp.output_wip = []
+
+    def run_and_ship(self, date = sim_clock()):
+        self.run(date)
+        self.ship_output_wip(date)
 
     def get_dispatchlist(self):
-        return self.input_wip
+        dispatchlist = []
+        for wp in self.workplaces:
+            dispatchlist.extend(wp.output_wip)
+        return dispatchlist
 
 class ProductionOrder:
     """
@@ -127,13 +208,6 @@ class ProductionOrder:
     """
 
     def __init__(self,
-                 id=None,
-                 operationcycles=None,
-                 current_step=None,
-                 current_dispatchdep=None,
-                 next_step=None,
-                 next_dispatchdep=None,
-                 age=None,
                  PA=None,
                  ProductNumber=None,
                  ProductVersion=None,
@@ -149,7 +223,13 @@ class ProductionOrder:
                  SapOrderType=None,
                  IsDeleted=None,
                  DeliveryForecastPpsDate=None,
-                 DeliveryCriticalityPpsBool=None):
+                 DeliveryCriticalityPpsBool=None,
+                 operationcycles=None,
+                 current_step=None,
+                 current_dispatchdep=None,
+                 next_step=None,
+                 next_dispatchdep=None,
+                 age=None):
         """
         Initialize a new ProductionOrder instance.
 
@@ -192,7 +272,7 @@ class OperationCycle:
     :ivar PosNumber: Position number of the operation within a sequence.
     :ivar opcID: Unique identifier for the operational cycle.
     :ivar WorkPlaceName: Name of the workplace where the operation is performed.
-    :ivar Dispatchdepartment: Department responsible for dispatching the work.
+    :ivar dispatchdepartment: Department responsible for dispatching the work.
     :ivar Machine: Identification or name of the machine involved in the cycle.
     :ivar AdhocChangeState: Indicates if an ad-hoc change is applied to the cycle state.
     :ivar opc_state: Numeric representation of the operational cycle's state. 0 = not started / 1 = ongonig / 2 = stopped / 3 = done
@@ -208,7 +288,7 @@ class OperationCycle:
     :ivar opc_endtimestamp: Timestamp when the operational cycle ended.
     """
     def __init__(self, PA=None, PosNumber=None, opcID=None, workplace=None,
-                 Dispatchdepartment=None, machine=None, AdhocChangeState=None,
+                 dispatchdepartment=None, machine=None, AdhocChangeState=None,
                  opc_state=None, opc_state_text=None, PlannedAmountPieces=None,
                  ActualAmountPieces=None, PlannedAmountBoards=None,
                  ActualAmountBoards=None, PlannedOperationTime=None,
@@ -240,9 +320,9 @@ class OperationCycle:
                               related to this machine or process.
         :type WorkPlaceName: optional, any
 
-        :param Dispatchdepartment: Department responsible for dispatching related
+        :param dispatchdepartment: Department responsible for dispatching related
                                    processes or tasks.
-        :type Dispatchdepartment: optional, any
+        :type dispatchdepartment: optional, any
 
         :param Machine: Machine identifier or name being tracked within this
                         operational data.
@@ -300,7 +380,7 @@ class OperationCycle:
         self.PA = PA
         self.PosNumber = PosNumber
         self.workplace = workplace
-        self.Dispatchdepartment = Dispatchdepartment
+        self.dispatchdepartment = dispatchdepartment
         self.machine = machine
         self.AdhocChangeState = AdhocChangeState
         self.opc_state = opc_state
@@ -312,18 +392,125 @@ class OperationCycle:
         self.PlannedOperationTime = PlannedOperationTime
         self.ActualOperationTime = ActualOperationTime
         self.TotalInterruptTime = TotalInterruptTime
-        self.TotalActiveTime = TotalActiveTime
+        self.TotalActiveTime = 0
         self.opc_endtimestamp = opc_endtimestamp
         self.next_step = next_step
+        self.lastchangetimestamp = None
 
-    def mark_complete(self, date: sim_date = sim_date(), machine = None):
+    def progress(self, sim_date):
+        if self.lastchangetimestamp is None:
+            self.lastchangetimestamp = sim_date
+        self.TotalActiveTime += sim_date.difference(self.lastchangetimestamp)
+        self.lastchangetimestamp = sim_date
+        if self.TotalActiveTime >= self.PlannedOperationTime:
+            self.mark_complete()
+
+    def mark_complete(self, date: sim_clock = sim_clock(), machine = None):
         self.opc_state = 3
         self.opc_state_text = 'done'
         self.opc_endtimestamp = date.date
         self.machine = machine
-        self.PA.current_step = self.next_step
+
+
+def build_dataset():
+    """
+    Loads and processes production orders and operation cycles data from SQL files.
+    Creates ProductionOrder and OperationCycle objects and organizes them into collections.
+
+    Returns:
+        tuple: Contains:
+            - production_orders (dict): Dictionary of ProductionOrder objects keyed by PA
+            - opcs (list): List of all OperationCycle objects
+            - workplaces (ndarray): Sorted array of unique workplace names
+            - opcs_by_PA (dict): Dictionary of OperationCycle objects grouped by PA
+    """
+    print('Loading data')
+    t0 = timestamp()
+
+    # get POs as dataframe
+    production_orders_data = load.get_sql_data('.\\load_PO_data.sql')
+    # get opcs as dataframe
+    opcs_data = load.get_sql_data('.\\load_opc_data.sql')
+
+    workplaces_data = np.unique(opcs_data[["WorkPlaceName"]].to_numpy().flatten())
+    dispatchdepartments_data = np.unique(opcs_data[["Dispatchdepartment"]].to_numpy().flatten())
+
+    dispatchdepartments = {}
+    for dispatchdepartment in dispatchdepartments_data:
+        dispatchdepartments[dispatchdepartment] = Dispatchdepartment(dispatchdepartment)
+
+    workplaces = {}
+    for workplace in workplaces_data:
+        workplaces[workplace] = Workplace(workplace)
+
+    opcs = {}
+    opcs_by_PA = {}
+    # generate and group opcs by PA
+    for _, row in opcs_data.iterrows():
+        obj = OperationCycle(*row)
+        opcs[obj.opcID] = obj
+        if row['PA'] not in opcs_by_PA:
+            opcs_by_PA[row['PA']] = [obj]
+        else:
+            opcs_by_PA[row['PA']].append(obj)
+
+    # generate all PA, reference opcs
+    production_orders = {}
+    for _, row in production_orders_data.iterrows():
         try:
-            self.PA.next_step = self.next_step.next_step
-        except AttributeError as e:
-            # there is no next step
-            self.PA.next_step = None
+            production_orders[row['PA']] = ProductionOrder(*row, operationcycles = opcs_by_PA[row['PA']])
+        except KeyError as e:
+            print(f'Could not find {row["PA"]} in opcs_by_PA')
+            print(e)
+            continue
+        except Exception as e:
+            print(f'Could not create ProductionOrder for {row["PA"]}')
+            print(row)
+            print(e)
+            continue
+
+    for pa in production_orders.keys():
+        for opc in production_orders[pa].operationcycles:
+            opc.next_step = production_orders[pa].operationcycles[production_orders[pa].operationcycles.index(opc)+1] if production_orders[pa].operationcycles.index(opc)+1 < len(production_orders[pa].operationcycles) else None
+
+    for opc in opcs.values():
+        try:
+            opc.PA = production_orders[opc.PA]
+        except KeyError as e:
+            print(f'Could not find {opc.PA} in production_orders')
+            print(e)
+            continue
+        try:
+            opc.workplace = workplaces[opc.workplace]
+        except KeyError as e:
+            print(f'Could not find {opc.workplace} in workplaces')
+            print(e)
+            continue
+        try:
+            opc.dispatchdepartment = dispatchdepartments[opc.dispatchdepartment]
+        except KeyError as e:
+            print(f'Could not find {opc.dispatchdepartment} in dispatchdepartments')
+            print(e)
+            continue
+
+    # create a mapping of dispatchdepartments and workplaces from opcs
+    for opc in opcs.values():
+        if opc.workplace and opc.dispatchdepartment and opc.workplace not in opc.dispatchdepartment.workplaces:
+            opc.dispatchdepartment.workplaces.append(opc.workplace)
+
+    # find active opc_id
+    for pa in production_orders.keys():
+        if production_orders[pa].FinishedDate: # skip all the finished PAs
+            continue
+        opcs_of_PA = opcs_by_PA[pa]
+        for opc in reversed(opcs_of_PA): # go from the end of the list to prevent starting on a skipped opc
+            if opc.opc_state!=0:
+                production_orders[pa].current_step = opc
+                production_orders[pa].next_step = opc.next_step
+                break
+        if production_orders[pa].current_step:
+            if production_orders[pa].current_step.workplace:
+                production_orders[pa].current_step.workplace.input_wip.append(production_orders[pa])
+
+    print(f'Loading time elapsed: {timestamp() - t0}')
+    return production_orders, opcs, workplaces, dispatchdepartments, opcs_by_PA
