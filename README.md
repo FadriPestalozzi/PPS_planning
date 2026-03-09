@@ -15,4 +15,4 @@
   - [x] DycoPlanEx DispatchList, OperationCycles, ProductionOrders
   - [x] (SAP_Rohdaten) not yet needed 
 
-- add time based production 
+- AR mit reinprogrammieren

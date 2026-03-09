@@ -34,7 +34,16 @@ class sim_clock():
         self.date += timedelta(hours=delta)
 
     def difference(self, other_date):
-        return (self.date - other_date.date).days * 24 + (self.date - other_date.date).seconds // 3600
+        # datetime defines the difference of timestamp(n+1) - timestamp(n) as -1hour, hence the negative sign
+        return -round((other_date.date - self.date).total_seconds() / 3600, 0)
+
+    def string(self):
+        return self.date.strftime("%Y-%m-%d_%H-%M-%S")
+
+    def copy(self):
+        b = type(self).__new__(type(self))
+        b.__dict__.update(self.__dict__)
+        return b
 
 class Workplace:
     def __init__(self, name, capa_per_day=None, parallel_processes=None):
@@ -51,42 +60,6 @@ class Workplace:
         self.input_wip: list[ProductionOrder] = []
         self.output_wip: list[ProductionOrder] = []
 
-    # def run(self, date = sim_clock()):
-    #     """
-    #     Process work-in-progress items according to workplace capacity.
-    #
-    #     Moves items from input queue to output queue based on the daily capacity limit.
-    #     Input queue is updated to remove processed items.
-    #
-    #     Returns:
-    #         None
-    #     """
-    #     if self.parallel_processes is None:
-    #         raise Exception ('No Capacity defined for Workplace')
-    #     if type(self.parallel_processes) is not int:
-    #         self.parallel_processes = int(self.parallel_processes)
-    #     # Convert up to capa_per_day items from input to output
-    #     if len(self.input_wip) < self.parallel_processes:
-    #         self.output_wip = self.input_wip
-    #     else:
-    #         self.output_wip = list(self.input_wip)[:self.parallel_processes]
-    #     for pa in self.output_wip:
-    #         pa.current_step.mark_complete(date)
-    #     #self.input_wip = list(self.input_wip)[self.parallel_processes:]
-    #
-    # def ship_output_wip(self, date = sim_clock()):
-    #     if len(self.output_wip)<1:
-    #         return
-    #     for pa in self.output_wip:
-    #         if pa.next_step is None:
-    #             pa.FinishedDate = date.date
-    #             break
-    #         pa.next_step.workplace.input_wip.append(pa)
-    #     self.output_wip = []
-    #
-    # def run_and_ship(self, date = sim_clock()):
-    #     self.run(date)
-    #     self.ship_output_wip()
 
     def load_parallel_from_file(self, default=1, mute=True):
         try:
@@ -116,7 +89,7 @@ class Dispatchdepartment:
         self.workplaces: list[Workplace] = []
 
 
-    def run(self, date = sim_clock()):
+    def run(self, date = sim_clock(), logfile=None):
         """
         Process work-in-progress items according to workplace capacity.
 
@@ -135,13 +108,17 @@ class Dispatchdepartment:
             # process the whole wip if parallel places exist, else only the first couple
             if len(wp.input_wip) < wp.parallel_processes:
                 for pa in wp.input_wip:
-                    pa.current_step.progress(date)
+                    pa.current_step.progress(date, logfile=logfile)
             else:
                 for pa in wp.input_wip[:wp.parallel_processes]:
-                    pa.current_step.progress(date)
+                    pa.current_step.progress(date, logfile=logfile)
             # now check all finished opcs and move them to output_wip
             for pa in wp.input_wip:
+                # if logfile:
+                    # logfile.write(f'{wp.name} {pa.PA} ( {round(pa.current_step.TotalActiveTime,2)} / {round(pa.current_step.PlannedOperationTime,2)})\n')
                 if pa.current_step.opc_state == 3:
+                    # if logfile:
+                    #     logfile.write(f'{wp.name} {pa.PA} {pa.current_step.PosNumber} was finished at {date.date} and is shipped from {pa.current_step.workplace.name} to {pa.next_step.workplace.name if pa.next_step else 'None' }\n')
                     wp.output_wip.append(pa)
                     pa.current_step = pa.next_step
                     try:
@@ -156,7 +133,7 @@ class Dispatchdepartment:
                     pa.next_step = None
         return
 
-    def ship_output_wip(self, date = sim_clock()):
+    def ship_output_wip(self, date = sim_clock(), logfile=None):
         for wp in self.workplaces:
             if len(wp.output_wip)<1:
                 break
@@ -397,15 +374,20 @@ class OperationCycle:
         self.next_step = next_step
         self.lastchangetimestamp = None
 
-    def progress(self, sim_date):
+    def progress(self, sim_date, logfile = None):
         if self.lastchangetimestamp is None:
-            self.lastchangetimestamp = sim_date
+            self.lastchangetimestamp = sim_date.copy()
         self.TotalActiveTime += sim_date.difference(self.lastchangetimestamp)
-        self.lastchangetimestamp = sim_date
+        if logfile:
+            logfile.write('progress ' + ' '.join(['PA', str(self.PA.PA), 'opc', str(self.opcID), 'workplace', str(self.workplace.name), 'TotalActiveTime', str(self.TotalActiveTime), 'PlannedOperationTime',
+                                                  str(self.PlannedOperationTime), 'lastchangetimestamp', str(self.lastchangetimestamp.date), 'sim_date', str(sim_date.date), 'difference', str(sim_date.difference(
+                    self.lastchangetimestamp)), '\n']))
+        self.lastchangetimestamp = sim_date.copy()
         if self.TotalActiveTime >= self.PlannedOperationTime:
             self.mark_complete()
+        return
 
-    def mark_complete(self, date: sim_clock = sim_clock(), machine = None):
+    def mark_complete(self, date: sim_clock = sim_clock(), machine=None):
         self.opc_state = 3
         self.opc_state_text = 'done'
         self.opc_endtimestamp = date.date

@@ -1,7 +1,9 @@
 /data
+/logs
 capa_per_wpg.csv
 dataloading.py
 load_PO_data.sql
 load_opc_data.sql
 capa_per_day.sql
+shiftmodell_per_workplace.csv
 test.py
