@@ -1,7 +1,7 @@
 # requirements derived from Bain Report
 
-- [ ] forecast production throughput based on historic data
-- [ ] forecast dispatch-list of ongoing production orders
+- [x] forecast production throughput based on historic data
+- [x] forecast dispatch-list of ongoing production orders
 - [ ] Forecast and detect bottlenecks before they happen
 
 
@@ -15,4 +15,17 @@
   - [x] DycoPlanEx DispatchList, OperationCycles, ProductionOrders
   - [x] (SAP_Rohdaten) not yet needed 
 
-- AR mit reinprogrammieren
+
+- [ ] program Auftragsrückstand and prioritization
+
+
+- [ ] Shift times
+
+
+- [ ] interrupt simulations
+
+
+- [ ] compare sim Movecount with real one
+
+
+- [ ] build DUI

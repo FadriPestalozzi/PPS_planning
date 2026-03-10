@@ -1,36 +1,142 @@
 from datetime import datetime, timedelta
-
-import numpy as np
-
-import dataloading as load
 from time import time as timestamp, sleep
 
-
+import numpy as np
 import pandas as pd
+
+import plotting as plt
+
+import dataloading as load
 
 # ----------------------------
 # Kapazitätstabelle
 # Einheit = Aufträge pro Tag
 # 80% von max. Kapazität
 # ----------------------------
+def update_capacity():
+    """
+    Updates the capacity data by retrieving it using SQL queries and saving it
+    into a CSV file. The query is loaded from a SQL file and the output is
+    saved with specified encoding and delimiter.
+
+    :return: None
+    """
+    load.get_sql_data('./capa_per_day.sql').to_csv('capa_per_wpg.csv', index=False, encoding='utf-8', sep=';')
+
+
 lookup_capa_per_day = pd.read_csv('./capa_per_wpg.csv', delimiter=';', encoding='UTF-8')
-lookup_parallel_per_day = pd.read_csv('./capa_per_wpg.csv', delimiter=';', encoding='UTF-8')
+# lookup_capa_per_day = lookup_capa_per_day.set_index('Workplace')['MaxOPCs'].mul(0.8).to_dict()
+lookup_capa_per_day = lookup_capa_per_day.set_index('Workplace')['Q3OPCs'].mul(1.0).to_dict()
+lookup_parallel_per_day = pd.read_csv('./processingslots_per_workplace.csv', delimiter=';', encoding='UTF-8')
+lookup_parallel_per_day = lookup_parallel_per_day.set_index('Workplace')['processing_slots'].to_dict()
+
 # load a daily capacity of at least one opc per day
-lookup_capa_per_day = lookup_capa_per_day.set_index('Workplace')['MaxOPCs'].mul(0.8).to_dict()
-lookup_parallel_per_day = lookup_parallel_per_day.set_index('Workplace')['parallel'].to_dict()
 for key in lookup_capa_per_day.keys():
     if lookup_capa_per_day[key] < 1:
         lookup_capa_per_day[key] = 1
+
+# ----------------------------
+# Schichtzeiten
+# ----------------------------
+lookup_schichtzeiten_per_wp = pd.read_csv('./shiftmodell_per_workplace.csv', delimiter=';', encoding='UTF-8')
+lookup_schichtzeiten_per_wp = lookup_schichtzeiten_per_wp.set_index('Workplace').apply(
+    lambda row: [row["Morning"], row["Evening"], row["Night"], row["Day"]], axis=1).to_dict()
+
+
+def time_based_simulation(production_orders, opcs, workplaces, dispatchdepartments,
+                          logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt',
+                          steps=168):
+    simtime = sim_clock()
+    fig, [ax, ax2] = plt.initialize_plot()
+    with open(logpath, 'a+', encoding='UTF-8') as f:
+        f.write(f'Logfile for {datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}\n')
+        f.write('Dispatchlists:\n')
+        for disp in dispatchdepartments.values():
+            for wp in disp.workplaces:
+                f.write(f'Workplace: {wp.name} has {len(wp.input_wip)} WIP\n')
+                f.write(','.join([str(elem.PA) + ' ' + str(elem.current_step.opcID) + ' ' + str(
+                    round(elem.current_step.TotalActiveTime, 2)) + '/' + str(
+                    round(elem.current_step.PlannedOperationTime, 2)) for elem in wp.input_wip]) + '\n')
+        f.write('\n')
+
+        for step in range(steps):
+            simtime.tick()
+            plt.update_plot(fig, ax, ax2, dispatchdepartments, workplaces, simtime.string())
+            with open(logpath, 'a+', encoding='UTF-8') as f:
+                print(f'Step: {step}', simtime.date)
+                f.write(f'Step: {step}, {simtime.date}\n')
+                for disp in dispatchdepartments.values():
+                    disp.run(simtime, f)
+                # first process all wps, then ship them. Else process A, shipping to B then processing B results in PAs jumping multiple times in a sim day
+                for disp in dispatchdepartments.values():
+                    disp.ship_output_wip(simtime, f)
+    plt.savefig(f'./finish.png')
+
+
+def day_based_simulation(production_orders, opcs, workplaces, dispatchdepartments,
+                          logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt',steps=21):
+    simtime = sim_clock()
+    fig, [ax, ax2] = plt.initialize_plot(dispatchdepartments, workplaces)
+    with open(logpath, 'a+', encoding='UTF-8') as f:
+        f.write(f'Logfile for {datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}\n')
+        f.write('Dispatchlists:\n')
+        for disp in dispatchdepartments.values():
+            for wp in disp.workplaces:
+                f.write(f'Workplace: {wp.name} has {len(wp.input_wip)} WIP\n')
+                f.write(','.join([str(elem.PA) + ' ' + str(elem.current_step.opcID) for elem in wp.input_wip]) + '\n')
+        f.write('\n')
+
+        for step in range(steps):
+            simtime.next_day()
+            plt.update_plot(fig, ax, ax2, dispatchdepartments, workplaces, simtime.string())
+            with open(logpath, 'a+', encoding='UTF-8') as f:
+                print(f'Step: {step}', simtime.date)
+                f.write(f'Step: {step}, {simtime.date}\n')
+                for disp in dispatchdepartments.values():
+                    disp.step(f)
+                # first process all wps, then ship them. Else process A, shipping to B then processing B results in PAs jumping multiple times in a sim day
+                for disp in dispatchdepartments.values():
+                    disp.ship_output_wip(simtime, f)
+
+
+    def update(step=0):
+        with open(logpath, 'a+', encoding='UTF-8') as f:
+            f.write(f'Step: {step} \n')
+            for disp in dispatchdepartments.values():
+                disp.step(logfile=f)
+            # first process all wps, then ship them. Else process A, shipping to B then processing B results in PAs jumping multiple times in a sim day
+            for disp in dispatchdepartments.values():
+                disp.ship_output_wip(logfile=f)
+
+        # updating the graph
+        heights = [sum([len(workplaces[wp.name].input_wip) for wp in dispatchdepartments[disp].workplaces]) for disp in
+                   dispatchdepartments.keys()]
+        ax.cla()
+        ax.bar(names, heights)
+        ax.set_xlabel("Dispatch Department")
+        ax.set_ylabel("WIP in PA")
+        ax.set_xticks(range(len(names)))
+        ax.set_xticklabels(names, rotation=45, ha="right")
+        ax.set_ylim(0, 150)
+        ax2.bar(['fertig'], [len(workplaces[wp].output_wip) for wp in workplaces.keys() if wp == 'Abschlussbuchung'])
+        sleep(.2)
+        plt.title('Tag ' + str(step))
+        plt.draw()
+        plt.pause(0.001)
+
+
+        plt.savefig(f'./finish.png')
+
 
 class sim_clock():
     def __init__(self, date=datetime.today(), hour=datetime.now().hour):
         self.date = date.replace(hour=hour, minute=0, second=0, microsecond=0)
 
-    def next_day(self, delta = 1):
+    def next_day(self, delta=1):
         self.date += timedelta(days=delta)
         return self.date
 
-    def tick(self, delta = 1):
+    def tick(self, delta=1):
         self.date += timedelta(hours=delta)
 
     def difference(self, other_date):
@@ -45,6 +151,7 @@ class sim_clock():
         b.__dict__.update(self.__dict__)
         return b
 
+
 class Workplace:
     def __init__(self, name, capa_per_day=None, parallel_processes=None):
         self.name = name
@@ -52,14 +159,13 @@ class Workplace:
         if capa_per_day is None:
             self.load_capa_from_file()
         else:
-            self.capa_per_day = capa_per_day # use the floor of capa_per_day
+            self.capa_per_day = capa_per_day  # use the floor of capa_per_day
         if parallel_processes is None:
             self.load_parallel_from_file()
         else:
-            self.parallel_processes = parallel_processes # use the floor of capa_per_day
+            self.parallel_processes = parallel_processes  # use the floor of capa_per_day
         self.input_wip: list[ProductionOrder] = []
         self.output_wip: list[ProductionOrder] = []
-
 
     def load_parallel_from_file(self, default=1, mute=True):
         try:
@@ -83,13 +189,13 @@ class Workplace:
             else:
                 raise e
 
+
 class Dispatchdepartment:
     def __init__(self, name):
         self.name = name
         self.workplaces: list[Workplace] = []
 
-
-    def run(self, date = sim_clock(), logfile=None):
+    def run(self, date=sim_clock(), logfile=None):
         """
         Process work-in-progress items according to workplace capacity.
 
@@ -101,7 +207,7 @@ class Dispatchdepartment:
         """
         for wp in self.workplaces:
             if wp.parallel_processes is None:
-                raise Exception ('No parallel processing defined for workplace')
+                raise Exception('No parallel processing defined for workplace')
             if type(wp.parallel_processes) is not int:
                 wp.parallel_processes = int(wp.parallel_processes)
             # Progress up to parallel_processes items from input to output
@@ -115,7 +221,7 @@ class Dispatchdepartment:
             # now check all finished opcs and move them to output_wip
             for pa in wp.input_wip:
                 # if logfile:
-                    # logfile.write(f'{wp.name} {pa.PA} ( {round(pa.current_step.TotalActiveTime,2)} / {round(pa.current_step.PlannedOperationTime,2)})\n')
+                # logfile.write(f'{wp.name} {pa.PA} ( {round(pa.current_step.TotalActiveTime,2)} / {round(pa.current_step.PlannedOperationTime,2)})\n')
                 if pa.current_step.opc_state == 3:
                     # if logfile:
                     #     logfile.write(f'{wp.name} {pa.PA} {pa.current_step.PosNumber} was finished at {date.date} and is shipped from {pa.current_step.workplace.name} to {pa.next_step.workplace.name if pa.next_step else 'None' }\n')
@@ -133,9 +239,22 @@ class Dispatchdepartment:
                     pa.next_step = None
         return
 
-    def ship_output_wip(self, date = sim_clock(), logfile=None):
+    def step(self, logfile=None):
         for wp in self.workplaces:
-            if len(wp.output_wip)<1:
+            if wp.capa_per_day is None:
+                return Exception('No Capacity defined for Workplace')
+            if type(wp.capa_per_day) is not int:
+                wp.capa_per_day = int(wp.capa_per_day)
+                # Convert up to capa_per_day items from input to output
+            wp.output_wip = list(wp.input_wip)[:wp.capa_per_day]
+            wp.input_wip = list(wp.input_wip)[wp.capa_per_day:]
+            if logfile:
+                logfile.write(f'{wp.name} has {len(wp.output_wip)} finished PAs\n')
+                logfile.write(','.join([str(elem.PA) + ' ' + str(elem.current_step.opcID) for elem in wp.output_wip]) + '\n')
+
+    def ship_output_wip(self, date=sim_clock(), logfile=None):
+        for wp in self.workplaces:
+            if len(wp.output_wip) < 1:
                 break
             for pa in wp.output_wip:
                 if pa.next_step is None:
@@ -144,7 +263,7 @@ class Dispatchdepartment:
                 pa.next_step.workplace.input_wip.append(pa)
             wp.output_wip = []
 
-    def run_and_ship(self, date = sim_clock()):
+    def run_and_ship(self, date=sim_clock()):
         self.run(date)
         self.ship_output_wip(date)
 
@@ -154,12 +273,12 @@ class Dispatchdepartment:
             dispatchlist.extend(wp.output_wip)
         return dispatchlist
 
+
 class ProductionOrder:
     """
     Represents a production order in the manufacturing system.
 
     Attributes:
-        id (str): Unique identifier for the production order
         operationcycles (list): List of operation cycles associated with this order
         current_step (int): Current production step number
         current_dispatchdep (str): Current dispatch department
@@ -210,10 +329,8 @@ class ProductionOrder:
         """
         Initialize a new ProductionOrder instance.
 
-        :param id: Unique identifier for the production order
         :param operationcycles: List of operation cycles associated with this production order
         """
-        self.id = id
         self.operationcycles = operationcycles
         self.current_step: OperationCycle = current_step
         self.current_dispatchdep = current_dispatchdep
@@ -237,33 +354,60 @@ class ProductionOrder:
         self.DeliveryForecastPpsDate = DeliveryForecastPpsDate
         self.DeliveryCriticalityPpsBool = DeliveryCriticalityPpsBool
 
+
 class OperationCycle:
     """
-    Represents an operational cycle within a workplace or machine process.
+    Represents an operational cycle, encapsulating data about planned and
+    actual production performance, operational states, progress tracking,
+    and timestamps.
 
-    This class is designed to model the various attributes and metrics
-    associated with an operational cycle, such as planned and actual amounts,
-    cycle state, timing information, and other relevant data points.
+    Provides mechanisms to monitor and update the progress of an operation
+    against planned metrics. Tracks active states, interruptions, and the
+    completion status of the operation, allowing for comprehensive insights
+    into the efficiency and performance of processes.
 
-    :ivar PA: Optional process number or ID associated with the cycle.
-    :ivar PosNumber: Position number of the operation within a sequence.
-    :ivar opcID: Unique identifier for the operational cycle.
-    :ivar WorkPlaceName: Name of the workplace where the operation is performed.
-    :ivar dispatchdepartment: Department responsible for dispatching the work.
-    :ivar Machine: Identification or name of the machine involved in the cycle.
-    :ivar AdhocChangeState: Indicates if an ad-hoc change is applied to the cycle state.
-    :ivar opc_state: Numeric representation of the operational cycle's state. 0 = not started / 1 = ongonig / 2 = stopped / 3 = done
-    :ivar opc_state_text: Text description of the operational cycle's state. 0 = not started / 1 = ongonig / 2 = stopped / 3 = done
-    :ivar PlannedAmountPieces: Planned number of workpieces for the cycle.
-    :ivar ActualAmountPieces: Actual number of workpieces completed in the cycle.
-    :ivar PlannedAmountBoards: Planned number of boards for the cycle.
-    :ivar ActualAmountBoards: Actual number of boards completed in the cycle.
-    :ivar PlannedOperationTime: Planned operation time (in seconds or another unit).
-    :ivar ActualOperationTime: Actual operation time (in seconds or another unit).
-    :ivar TotalInterruptTime: Total interrupt time occurring during the cycle.
-    :ivar TotalActiveTime: Total active time logged for the cycle.
-    :ivar opc_endtimestamp: Timestamp when the operational cycle ended.
+    :ivar opcID: Unique identifier for the operation cycle instance.
+    :type opcID: any
+    :ivar PA: Planned activity related to this operation.
+    :type PA: any
+    :ivar PosNumber: Position or serial number of the operation instance.
+    :type PosNumber: any
+    :ivar workplace: Workplace or station associated with the operation cycle.
+    :type workplace: any
+    :ivar dispatchdepartment: Department responsible for dispatching associated tasks.
+    :type dispatchdepartment: any
+    :ivar machine: The machine associated with this operation.
+    :type machine: any
+    :ivar AdhocChangeState: Indicator of any ad-hoc state changes during operation.
+    :type AdhocChangeState: any
+    :ivar opc_state: Numeric or coded state of the operation (e.g., running, complete).
+    :type opc_state: any
+    :ivar opc_state_text: Descriptive state of the operation.
+    :type opc_state_text: any
+    :ivar PlannedAmountPieces: Number of units planned to be produced.
+    :type PlannedAmountPieces: any
+    :ivar ActualAmountPieces: Actual number of units produced.
+    :type ActualAmountPieces: any
+    :ivar PlannedAmountBoards: Number of boards planned for production.
+    :type PlannedAmountBoards: any
+    :ivar ActualAmountBoards: Actual number of boards produced.
+    :type ActualAmountBoards: any
+    :ivar PlannedOperationTime: Total time planned for the operation.
+    :type PlannedOperationTime: any
+    :ivar ActualOperationTime: Total time actually spent during the operation.
+    :type ActualOperationTime: any
+    :ivar TotalInterruptTime: Total duration of interruptions during the operation.
+    :type TotalInterruptTime: any
+    :ivar TotalActiveTime: Accumulated active processing time during the operation.
+    :type TotalActiveTime: int
+    :ivar opc_endtimestamp: Timestamp marking the conclusion of this operation cycle.
+    :type opc_endtimestamp: any
+    :ivar next_step: Next step or operational process to follow this cycle.
+    :type next_step: any
+    :ivar lastchangetimestamp: Timestamp of the last recorded state or time change.
+    :type lastchangetimestamp: any
     """
+
     def __init__(self, PA=None, PosNumber=None, opcID=None, workplace=None,
                  dispatchdepartment=None, machine=None, AdhocChangeState=None,
                  opc_state=None, opc_state_text=None, PlannedAmountPieces=None,
@@ -272,86 +416,45 @@ class OperationCycle:
                  ActualOperationTime=None, TotalInterruptTime=None,
                  TotalActiveTime=None, opc_endtimestamp=None, next_step=None):
         """
-        Represents a data structure to handle and store operational data regarding a
-        workplace's planned and actual performance, operational state, and timestamps.
-        This structure allows tracking, analysis, and comparison of planned versus
-        actual performance metrics, including operation timings and completion state.
+        Initializes an instance of the class with various parameters to represent
+        and manage operational data attributes.
 
-        This class is used for encapsulating all data involving the operational
-        state and details of a machine or process. Using attributes, it provides
-        information related to the planned and successful achievements, the state
-        of operation, as well as related department and workplace details.
-
-        :param PA: Planned activity identifier. Can hold information related to
-                   the planned operation.
-        :type PA: optional, any
-
-        :param PosNumber: Position or serial number associated with this specific
-                          operational record.
-        :type PosNumber: optional, any
-
-        :param opcID: Unique identifier for the operational process control (OPC).
-        :type opcID: optional, any
-
-        :param WorkPlaceName: Name or identifier for the workplace or station
-                              related to this machine or process.
-        :type WorkPlaceName: optional, any
-
-        :param dispatchdepartment: Department responsible for dispatching related
-                                   processes or tasks.
-        :type dispatchdepartment: optional, any
-
-        :param Machine: Machine identifier or name being tracked within this
-                        operational data.
-        :type Machine: optional, any
-
-        :param AdhocChangeState: Specifies whether there was an ad-hoc state
-                                 change during the operation.
-        :type AdhocChangeState: optional, any
-
-        :param opc_state: Numeric or coded representation of the operational
-                          state of the process or machine.
-        :type opc_state: optional, any
-
-        :param opc_state_text: Text description of the operational state of the
-                               process or machine.
-        :type opc_state_text: optional, any
-
-        :param PlannedAmountPieces: Number of pieces that were initially
-                                     planned to be produced.
-        :type PlannedAmountPieces: optional, any
-
-        :param ActualAmountPieces: Actual number of pieces produced during the
-                                   operation.
-        :type ActualAmountPieces: optional, any
-
-        :param PlannedAmountBoards: Number of boards (or equivalent elements)
-                                     planned for production.
-        :type PlannedAmountBoards: optional, any
-
-        :param ActualAmountBoards: Actual number of boards (or equivalent
-                                   elements) produced.
-        :type ActualAmountBoards: optional, any
-
-        :param PlannedOperationTime: Time planned for the operation, in seconds
-                                     or a predefined time unit.
-        :type PlannedOperationTime: optional, any
-
-        :param ActualOperationTime: Actual operation duration calculated in
-                                    seconds or a predefined time unit.
-        :type ActualOperationTime: optional, any
-
-        :param TotalInterruptTime: Total time during the operation in which
-                                   processes were interrupted.
-        :type TotalInterruptTime: optional, any
-
-        :param TotalActiveTime: Total active time the machine or process was
-                                operational.
-        :type TotalActiveTime: optional, any
-
-        :param opc_endtimestamp: The timestamp marking the operation's
-                                 conclusion or cut-off point.
-        :type opc_endtimestamp: optional, any
+        :param PA: Optional; Represents the process area for the operational data.
+        :param PosNumber: Optional; Position number indicating the specific aspect
+                          of the operation.
+        :param opcID: Optional; Unique identifier for the OPC (OLE for Process
+                      Control) operation.
+        :param workplace: Optional; Specifies the workplace or location associated
+                          with the operation.
+        :param dispatchdepartment: Optional; Indicates the dispatch department
+                                   handling the operation.
+        :param machine: Optional; Represents the machine involved in the process.
+        :param AdhocChangeState: Optional; Defines status changes that occur ad hoc
+                                 in the operation.
+        :param opc_state: Optional; Holds the OPC state code indicating the
+                          operational status.
+        :param opc_state_text: Optional; Descriptive text of the OPC state for
+                               more readability.
+        :param PlannedAmountPieces: Optional; Denotes the planned number of pieces
+                                     to be processed.
+        :param ActualAmountPieces: Optional; Denotes the actual number of pieces
+                                    processed.
+        :param PlannedAmountBoards: Optional; Represents the planned number of
+                                     boards for the operation.
+        :param ActualAmountBoards: Optional; Represents the actual number of
+                                    boards processed.
+        :param PlannedOperationTime: Optional; Duration planned for the operation
+                                      in a time format.
+        :param ActualOperationTime: Optional; Actual duration the operation took
+                                     in a time format.
+        :param TotalInterruptTime: Optional; Total downtime or interrupt time
+                                   experienced during the operation.
+        :param TotalActiveTime: Optional; Represents the total active time compiled
+                                during the operation. Defaults to zero.
+        :param opc_endtimestamp: Optional; Timestamp indicating the moment the
+                                 operation ended.
+        :param next_step: Optional; The next step or operation to be processed
+                          after completion of the current one.
         """
         self.opcID = opcID
         self.PA = PA
@@ -374,13 +477,16 @@ class OperationCycle:
         self.next_step = next_step
         self.lastchangetimestamp = None
 
-    def progress(self, sim_date, logfile = None):
+    def progress(self, sim_date, logfile=None):
         if self.lastchangetimestamp is None:
             self.lastchangetimestamp = sim_date.copy()
         self.TotalActiveTime += sim_date.difference(self.lastchangetimestamp)
         if logfile:
-            logfile.write('progress ' + ' '.join(['PA', str(self.PA.PA), 'opc', str(self.opcID), 'workplace', str(self.workplace.name), 'TotalActiveTime', str(self.TotalActiveTime), 'PlannedOperationTime',
-                                                  str(self.PlannedOperationTime), 'lastchangetimestamp', str(self.lastchangetimestamp.date), 'sim_date', str(sim_date.date), 'difference', str(sim_date.difference(
+            logfile.write('progress ' + ' '.join(
+                ['PA', str(self.PA.PA), 'opc', str(self.opcID), 'workplace', str(self.workplace.name),
+                 'TotalActiveTime', str(self.TotalActiveTime), 'PlannedOperationTime',
+                 str(self.PlannedOperationTime), 'lastchangetimestamp', str(self.lastchangetimestamp.date), 'sim_date',
+                 str(sim_date.date), 'difference', str(sim_date.difference(
                     self.lastchangetimestamp)), '\n']))
         self.lastchangetimestamp = sim_date.copy()
         if self.TotalActiveTime >= self.PlannedOperationTime:
@@ -440,7 +546,7 @@ def build_dataset():
     production_orders = {}
     for _, row in production_orders_data.iterrows():
         try:
-            production_orders[row['PA']] = ProductionOrder(*row, operationcycles = opcs_by_PA[row['PA']])
+            production_orders[row['PA']] = ProductionOrder(*row, operationcycles=opcs_by_PA[row['PA']])
         except KeyError as e:
             print(f'Could not find {row["PA"]} in opcs_by_PA')
             print(e)
@@ -453,7 +559,9 @@ def build_dataset():
 
     for pa in production_orders.keys():
         for opc in production_orders[pa].operationcycles:
-            opc.next_step = production_orders[pa].operationcycles[production_orders[pa].operationcycles.index(opc)+1] if production_orders[pa].operationcycles.index(opc)+1 < len(production_orders[pa].operationcycles) else None
+            opc.next_step = production_orders[pa].operationcycles[
+                production_orders[pa].operationcycles.index(opc) + 1] if production_orders[pa].operationcycles.index(
+                opc) + 1 < len(production_orders[pa].operationcycles) else None
 
     for opc in opcs.values():
         try:
@@ -482,11 +590,11 @@ def build_dataset():
 
     # find active opc_id
     for pa in production_orders.keys():
-        if production_orders[pa].FinishedDate: # skip all the finished PAs
+        if production_orders[pa].FinishedDate:  # skip all the finished PAs
             continue
         opcs_of_PA = opcs_by_PA[pa]
-        for opc in reversed(opcs_of_PA): # go from the end of the list to prevent starting on a skipped opc
-            if opc.opc_state!=0:
+        for opc in reversed(opcs_of_PA):  # go from the end of the list to prevent starting on a skipped opc
+            if opc.opc_state != 0:
                 production_orders[pa].current_step = opc
                 production_orders[pa].next_step = opc.next_step
                 break

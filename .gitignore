@@ -7,3 +7,6 @@ load_opc_data.sql
 capa_per_day.sql
 shiftmodell_per_workplace.csv
 test.py
+templates/index.html
+update_workplaces_parameters.py
+processingslots_per_workplace.csv
