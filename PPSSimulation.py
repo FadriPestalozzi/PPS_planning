@@ -71,11 +71,12 @@ def time_based_simulation(production_orders, opcs, workplaces, dispatchdepartmen
 
 
 def day_based_simulation(production_orders, opcs, workplaces, dispatchdepartments,
-                          logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log',steps=21,
+                          logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log',steps=14,
                          days_offset=0):
     simtime = sim_clock()
     simtime.date = simtime.date - timedelta(days=days_offset)
-    fig, ax, ax2 = plt.initialize_plot(dispatchdepartments, workplaces)
+    fig, ax, ax2, ax_table = plt.initialize_plot(dispatchdepartments, workplaces)
+    saturations = {}
 
     with open(logpath, 'a+', encoding='UTF-8') as f:
         for step in range(steps):
@@ -85,7 +86,7 @@ def day_based_simulation(production_orders, opcs, workplaces, dispatchdepartment
 
             if simtime.weekday()==0:
                 print('Montag')
-                plt.saturation(dispatchdepartments,simtime)
+                plt.plot_saturation(dispatchdepartments, saturations, simtime, fig, ax_table)
 
             print(f'Schichtzeit [N,F,T,S] {simtime.current_shift}\n')
             f.write(f'Schichtzeit [N,F,T,S] {simtime.current_shift}\n')
@@ -94,12 +95,13 @@ def day_based_simulation(production_orders, opcs, workplaces, dispatchdepartment
                 for wp in disp.workplaces:
                     f.write(f'\t{wp.name} {wp.shifts} {wp.input_wip}\n')
                 f.write('\n')
-
                 disp.step(f)
+
             # first process all wps, then ship them. Else process A, shipping to B then processing B results in PAs jumping multiple times in a sim day
             for disp in dispatchdepartments.values():
                 disp.ship_output_wip(simtime, f)
-            plt.update_plot(fig, ax, ax2, dispatchdepartments, workplaces, simtime.string(), './plots/' + simtime.string() + '.png')
+            saturations = plt.plot_saturation(dispatchdepartments, saturations, simtime, fig, ax_table)
+            plt.update_plot(fig, ax, ax2, dispatchdepartments, workplaces, simtime.string(), f'./plots/{step+1}.png')
 
     plt.save_plot(fig, './plots/finish.png')
 
@@ -146,6 +148,9 @@ class sim_clock():
         b = type(self).__new__(type(self))
         b.__dict__.update(self.__dict__)
         return b
+
+    def weekday(self):
+        return self.date.weekday()
 
 
 class Workplace:
@@ -280,11 +285,11 @@ class Dispatchdepartment:
     def ship_output_wip(self, date=sim_clock(), logfile=None):
         for wp in self.workplaces:
             if len(wp.output_wip) < 1:
-                break
+                continue
             for pa in wp.output_wip:
                 if pa.next_step is None:
                     pa.FinishedDate = date.date
-                    break
+                    continue
                 pa.next_step.workplace.input_wip.append(pa)
             if not wp.name == 'Abschlussbuchung':
                 wp.output_wip = []
@@ -539,7 +544,8 @@ class OperationCycle:
         self.machine = machine
 
 
-def build_dataset(logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log', days_offset=0, mute=True):
+def build_dataset(logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log', days_offset=0, mute=True
+                  , production_orders_data=None, opcs_data=None):
     """
     Loads and processes production orders and operation cycles data from SQL files.
     Creates ProductionOrder and OperationCycle objects and organizes them into collections.
@@ -556,10 +562,12 @@ def build_dataset(logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%
         f.write(f'Logfile for {datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}\n')
         t0 = timestamp()
         # get POs as dataframe
-        production_orders_data = load.get_sql_data('./data/load_PO_data.sql', args={'days_offset': days_offset})
+        if production_orders_data is None:
+            production_orders_data = load.get_sql_data('./data/load_PO_data.sql', args={'days_offset': days_offset})
         # print('POs loaded:', len(np.unique(production_orders_data[['PA']].to_numpy().flatten())),'\n', np.unique(production_orders_data[['PA']].to_numpy().flatten()))
         # get opcs as dataframe
-        opcs_data = load.get_sql_data('./data/load_opc_data.sql', args={'days_offset': days_offset})
+        if opcs_data is None:
+            opcs_data = load.get_sql_data('./data/load_opc_data.sql', args={'days_offset': days_offset})
         # print('opcs loaded:', len(np.unique(opcs_data[['opc']].to_numpy().flatten())),'\n', np.unique(production_orders_data[['PA']].to_numpy().flatten()))
 
         workplaces_data = np.unique(opcs_data[["WorkPlaceName"]].to_numpy().flatten())
@@ -582,6 +590,11 @@ def build_dataset(logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%
         # generate and group opcs by PA
         for _, row in opcs_data.iterrows():
             obj = OperationCycle(*row)
+            # if there is an endtimestamp, convert it to a datetime object, drop the microseconds
+            if obj.opc_endtimestamp:
+                if not isinstance(obj.opc_endtimestamp, str):
+                    raise TypeError(f'{obj.opcID} opc_endtimestamp is not a string: {type(obj.opc_endtimestamp)}')
+                obj.opc_endtimestamp = datetime.strptime(obj.opc_endtimestamp.split('.')[0], "%Y-%m-%d %H:%M:%S")
             opcs[obj.opcID] = obj
             if row['PA'] not in opcs_by_PA:
                 opcs_by_PA[row['PA']] = [obj]
@@ -645,11 +658,10 @@ def build_dataset(logpath=f'./logs/log{datetime.now().strftime("%Y-%m-%d_%H-%M-%
 
         # find active opc_id
         for pa in production_orders.keys():
-            if production_orders[pa].FinishedDate:
-                continue
+            # if production_orders[pa].FinishedDate:
+            #     continue
             opcs_of_PA = opcs_by_PA[pa]
             for opc in reversed(opcs_of_PA):  # go from the end of the list to prevent starting on a skipped opc
-                # Todo: find the last opc, which was not finished at date -
                 if opc.opc_endtimestamp:
                     if opc.opc_endtimestamp < datetime.now() - timedelta(days=days_offset):
                         production_orders[pa].current_step = opc
